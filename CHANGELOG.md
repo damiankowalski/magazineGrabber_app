@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.1]
+
+### Fixed
+- **stare.e-gry.net: only the first download in a session worked; the next ones
+  failed until the app was restarted.** The login cookies now keep the browser's own
+  domain/path scoping and the cookie jar is cleared on each login, so the server's
+  follow-up `Set-Cookie` updates the session instead of creating a duplicate the
+  server then reads as the wrong session. On top of that, a failed or
+  "please log in" download on a login-based site now **re-establishes the session
+  automatically** (the same thing restarting the app was doing) and retries, and a
+  `Referer` header plus a small inter-request delay reduce the chance of tripping a
+  per-session throttle.
+
 ## [2.0.0]
 
 ### Added

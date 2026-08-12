@@ -105,16 +105,11 @@ namespace MagazineGrabber
             item.Progress = 0;
             item.IsIndeterminate = false;
 
-            bool loggedInThisItem = false;
-            int postLoginRetries = 0;
-
-            // A brand-new session isn't always honored on the download route on the very first
-            // request after logging in - the site can need a moment (or one "warm-up" request
-            // that completes the session server-side / picks up a follow-up Set-Cookie) before
-            // it serves the file. That's exactly what a user was doing by hand when they had to
-            // click "Start download" a second time. So after a fresh login we retry a couple of
-            // more times instead of failing the item after a single post-login attempt.
-            const int maxPostLoginRetries = 3;
+            bool sessionBased = provider.LoginUrl is not null;
+            int logins = 0;              // real (re)logins performed for THIS item
+            const int maxLogins = 2;
+            int retries = 0;             // plain retries without a new login
+            const int maxRetries = 3;
 
             while (true)
             {
@@ -151,41 +146,50 @@ namespace MagazineGrabber
                         return;
 
                     case DownloadResult.AuthRequired:
-                        if (!loggedInThisItem)
+                        if (logins >= maxLogins)
                         {
-                            var loggedIn = await EnsureLoggedInAsync(provider, requestLogin, log, ct);
-                            if (!loggedIn)
-                            {
-                                item.Status = "Login failed";
-                                Interlocked.Increment(ref _failed);
-                                return;
-                            }
-                            loggedInThisItem = true;
-                            item.Status = "Retrying...";
-                            await Task.Delay(500, ct);
-                            continue; // retry now that we're authenticated
+                            item.Status = "Failed";
+                            log($"{item.Title}: still not authenticated after re-login.", LogLevel.Error);
+                            Interlocked.Increment(ref _failed);
+                            return;
                         }
-
-                        // Already logged in but still told to log in: give the fresh session a
-                        // few chances to take effect before treating it as a real auth failure.
-                        if (postLoginRetries++ < maxPostLoginRetries)
+                        // If we already believed we were logged in, the session went stale - force
+                        // a brand-new login (same effect as the user restarting the app, which
+                        // they found works). WebView2 keeps the browser session, so this is
+                        // usually just one "I'm logged in" click, not a full re-type.
+                        bool force = _isAuthenticated;
+                        item.Status = force ? "Session expired - re-logging in..." : "Logging in...";
+                        logins++;
+                        if (!await EnsureLoggedInAsync(provider, requestLogin, log, ct, forceNew: force))
                         {
-                            item.Status = "Retrying...";
-                            await Task.Delay(1000, ct);
-                            continue;
+                            item.Status = "Login failed";
+                            Interlocked.Increment(ref _failed);
+                            return;
                         }
-                        item.Status = "Failed";
-                        log($"{item.Title}: still not authenticated after login.", LogLevel.Error);
-                        Interlocked.Increment(ref _failed);
-                        return;
+                        item.Status = "Retrying...";
+                        await Task.Delay(500, ct);
+                        continue;
 
                     default: // DownloadResult.Failed
-                        // A plain failure right after a fresh login is usually the same
-                        // "session not warmed up yet" case - retry a few times before giving up.
-                        if (loggedInThisItem && postLoginRetries++ < maxPostLoginRetries)
+                        if (retries < maxRetries)
                         {
+                            retries++;
+                            // On a login-based site a plain failure is almost always a dead or
+                            // throttled session; refresh it once (mimics the manual restart) then
+                            // retry. On public sites, just retry.
+                            if (sessionBased && logins < maxLogins)
+                            {
+                                logins++;
+                                item.Status = "Refreshing session...";
+                                if (!await EnsureLoggedInAsync(provider, requestLogin, log, ct, forceNew: true))
+                                {
+                                    item.Status = "Login failed";
+                                    Interlocked.Increment(ref _failed);
+                                    return;
+                                }
+                            }
                             item.Status = "Retrying...";
-                            await Task.Delay(1000, ct);
+                            await Task.Delay(1200, ct);
                             continue;
                         }
                         item.Status = "Failed";
@@ -223,16 +227,23 @@ namespace MagazineGrabber
             IMagazineProvider provider,
             Func<Uri, Task<List<Cookie>?>> requestLogin,
             Action<string, LogLevel> log,
-            CancellationToken ct)
+            CancellationToken ct,
+            bool forceNew = false)
         {
             await _loginGate.WaitAsync(ct);
             try
             {
-                if (_isAuthenticated)
-                    return true; // another item already logged us in while we were waiting
+                // Normal case: reuse the session another item already established. When forceNew
+                // is set (the server told us the current session is stale), skip that shortcut
+                // and log in again from scratch.
+                if (_isAuthenticated && !forceNew)
+                    return true;
 
                 if (provider.LoginUrl is null)
                     return true; // shouldn't happen, but don't get stuck if it does
+
+                if (forceNew)
+                    _isAuthenticated = false;
 
                 var cookies = await requestLogin(provider.LoginUrl);
                 if (cookies is null || cookies.Count == 0)
