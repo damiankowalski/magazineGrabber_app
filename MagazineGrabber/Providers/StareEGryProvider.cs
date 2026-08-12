@@ -28,6 +28,9 @@ namespace MagazineGrabber
         private readonly CookieContainer _cookies = new CookieContainer();
         private readonly HttpClient _http;
 
+        private static readonly Uri SiteUri = new Uri("https://stare.e-gry.net/");
+        private const string SessionKey = "stare.e-gry.net";
+
         public StareEGryProvider()
         {
             var handler = new HttpClientHandler
@@ -37,6 +40,17 @@ namespace MagazineGrabber
             };
             _http = new HttpClient(handler);
             _http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) MagazineGrabber/1.0");
+
+            // Reuse a previously saved (encrypted) session so a returning user often doesn't have
+            // to log in at all - the first download just works with the restored cookies.
+            var saved = SessionStore.Load(SessionKey);
+            if (saved is not null)
+            {
+                foreach (Cookie c in saved)
+                {
+                    try { _cookies.Add(c); } catch { /* skip bad cookie */ }
+                }
+            }
         }
 
         public bool CanHandle(Uri sourceUri) =>
@@ -59,7 +73,7 @@ namespace MagazineGrabber
             }
             catch { /* GetAllCookies is best-effort; ignore if it isn't available */ }
 
-            var siteUri = new Uri("https://stare.e-gry.net/");
+            var siteUri = SiteUri;
             foreach (var c in cookies)
             {
                 try
@@ -77,6 +91,15 @@ namespace MagazineGrabber
                     catch { /* ignore malformed/duplicate cookie entries */ }
                 }
             }
+
+            // Remember this session (encrypted) so we don't have to log in again next run.
+            PersistSession();
+        }
+
+        private void PersistSession()
+        {
+            try { SessionStore.Save(SessionKey, _cookies.GetCookies(SiteUri)); }
+            catch { /* best-effort */ }
         }
 
         public async Task<List<MagazineItem>> ListItemsAsync(Uri sourceUri, IProgress<string>? status, CancellationToken ct)
@@ -211,6 +234,10 @@ namespace MagazineGrabber
                 if (totalBytes > 0)
                     progress.Report((double)totalRead / totalBytes * 100.0);
             }
+
+            // Download worked, so this session is good - save its (possibly server-refreshed)
+            // cookies so the next run/item reuses it without another login.
+            PersistSession();
 
             if (kind == OutputKind.Pdf)
             {

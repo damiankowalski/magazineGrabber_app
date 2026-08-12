@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
+using System.Threading.Tasks;
 using System.Windows;
+using Microsoft.Web.WebView2.Core;
 
 namespace MagazineGrabber
 {
@@ -11,6 +14,12 @@ namespace MagazineGrabber
 
         private readonly Uri _loginUrl;
 
+        // One shared WebView2 environment pointed at a persistent profile folder. Because the
+        // profile persists, once you log in the embedded browser stays logged in across dialog
+        // opens and app restarts - so re-authenticating is at most a single "I'm logged in"
+        // click, never re-typing your password.
+        private static CoreWebView2Environment? _sharedEnv;
+
         public LoginWebViewDialog(Uri loginUrl)
         {
             InitializeComponent();
@@ -18,11 +27,23 @@ namespace MagazineGrabber
             Loaded += LoginWebViewDialog_Loaded;
         }
 
+        private static async Task<CoreWebView2Environment> GetEnvironmentAsync()
+        {
+            if (_sharedEnv is not null)
+                return _sharedEnv;
+
+            var profileFolder = Path.Combine(AppPaths.DataFolder, "webview2");
+            Directory.CreateDirectory(profileFolder);
+            _sharedEnv = await CoreWebView2Environment.CreateAsync(userDataFolder: profileFolder);
+            return _sharedEnv;
+        }
+
         private async void LoginWebViewDialog_Loaded(object sender, RoutedEventArgs e)
         {
             try
             {
-                await Browser.EnsureCoreWebView2Async();
+                var env = await GetEnvironmentAsync();
+                await Browser.EnsureCoreWebView2Async(env);
                 Browser.CoreWebView2.Navigate(_loginUrl.ToString());
             }
             catch (Exception ex)

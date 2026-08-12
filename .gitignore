@@ -40,3 +40,7 @@ Desktop.ini
 *.djvu
 *.pdf
 !docs/**/*.pdf
+
+## App runtime data (encrypted saved session + WebView2 profile) - never commit
+MagazineGrabber-data/
+**/MagazineGrabber-data/

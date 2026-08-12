@@ -106,14 +106,15 @@ namespace MagazineGrabber
             item.IsIndeterminate = false;
 
             bool sessionBased = provider.LoginUrl is not null;
-            int logins = 0;              // real (re)logins performed for THIS item
+            int attempts = 0;
+            const int maxAttempts = 8;
+            int logins = 0;
             const int maxLogins = 2;
-            int retries = 0;             // plain retries without a new login
-            const int maxRetries = 3;
 
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
+                attempts++;
 
                 var progress = new Progress<double>(p => item.Progress = p);
                 DownloadOutcome outcome;
@@ -137,66 +138,59 @@ namespace MagazineGrabber
                     return;
                 }
 
-                switch (outcome.Result)
+                if (outcome.Result == DownloadResult.Success)
                 {
-                    case DownloadResult.Success:
-                        item.IsIndeterminate = false;
-                        item.Progress = 100;
-                        RecordSuccess(item, outcome);
-                        return;
+                    item.IsIndeterminate = false;
+                    item.Progress = 100;
+                    RecordSuccess(item, outcome);
+                    return;
+                }
 
-                    case DownloadResult.AuthRequired:
-                        if (logins >= maxLogins)
-                        {
-                            item.Status = "Failed";
-                            log($"{item.Title}: still not authenticated after re-login.", LogLevel.Error);
-                            Interlocked.Increment(ref _failed);
-                            return;
-                        }
-                        // If we already believed we were logged in, the session went stale - force
-                        // a brand-new login (same effect as the user restarting the app, which
-                        // they found works). WebView2 keeps the browser session, so this is
-                        // usually just one "I'm logged in" click, not a full re-type.
-                        bool force = _isAuthenticated;
-                        item.Status = force ? "Session expired - re-logging in..." : "Logging in...";
-                        logins++;
-                        if (!await EnsureLoggedInAsync(provider, requestLogin, log, ct, forceNew: force))
-                        {
-                            item.Status = "Login failed";
-                            Interlocked.Increment(ref _failed);
-                            return;
-                        }
-                        item.Status = "Retrying...";
-                        await Task.Delay(500, ct);
-                        continue;
+                bool needsAuth = outcome.Result == DownloadResult.AuthRequired;
+                bool canLoginAgain = logins < maxLogins;
 
-                    default: // DownloadResult.Failed
-                        if (retries < maxRetries)
-                        {
-                            retries++;
-                            // On a login-based site a plain failure is almost always a dead or
-                            // throttled session; refresh it once (mimics the manual restart) then
-                            // retry. On public sites, just retry.
-                            if (sessionBased && logins < maxLogins)
-                            {
-                                logins++;
-                                item.Status = "Refreshing session...";
-                                if (!await EnsureLoggedInAsync(provider, requestLogin, log, ct, forceNew: true))
-                                {
-                                    item.Status = "Login failed";
-                                    Interlocked.Increment(ref _failed);
-                                    return;
-                                }
-                            }
-                            item.Status = "Retrying...";
-                            await Task.Delay(1200, ct);
-                            continue;
-                        }
-                        item.Status = "Failed";
-                        log($"{item.Title}: download failed", LogLevel.Error);
+                // Decide whether to (re)login this round. Crucially, we do NOT re-login the moment
+                // a fresh session hiccups - we retry a couple of times first, so one good login is
+                // enough (the old logic asked you to log in twice in a row). We only (re)login when:
+                //   * we've never logged in and the server wants auth, or
+                //   * we're "authenticated" but the server still rejects us after a few retries
+                //     (the session really did go stale), or
+                //   * a plain failure on a login-based site has exhausted its retries.
+                bool shouldLogin =
+                    (needsAuth && !_isAuthenticated && canLoginAgain) ||
+                    (needsAuth && _isAuthenticated && attempts > 2 && canLoginAgain) ||
+                    (!needsAuth && sessionBased && attempts >= maxAttempts - 1 && canLoginAgain);
+
+                if (shouldLogin)
+                {
+                    logins++;
+                    bool force = _isAuthenticated; // stale session -> force a brand-new login
+                    item.Status = force ? "Session expired - re-logging in..." : "Logging in...";
+                    if (!await EnsureLoggedInAsync(provider, requestLogin, log, ct, forceNew: force))
+                    {
+                        item.Status = "Login failed";
                         Interlocked.Increment(ref _failed);
                         return;
+                    }
+                    item.Status = "Retrying...";
+                    await Task.Delay(400, ct);
+                    continue;
                 }
+
+                if (attempts < maxAttempts)
+                {
+                    item.Status = "Retrying...";
+                    await Task.Delay(needsAuth ? 800 : 1000, ct);
+                    continue;
+                }
+
+                item.Status = "Failed";
+                item.IsIndeterminate = false;
+                log(needsAuth
+                        ? $"{item.Title}: still not authenticated after login."
+                        : $"{item.Title}: download failed", LogLevel.Error);
+                Interlocked.Increment(ref _failed);
+                return;
             }
         }
 

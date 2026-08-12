@@ -3,6 +3,23 @@
 All notable changes to this project are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.0]
+
+### Added
+- **Persistent login session.** After you log in to stare.e-gry.net once, the session
+  is saved **encrypted** (Windows DPAPI, scoped to your Windows account) next to the
+  EXE, and the embedded browser keeps its own profile. On the next run downloads
+  usually start with **no login at all**; when the session finally expires,
+  re-authenticating is a single "I'm logged in" click - you never re-type your
+  password. The encrypted blob can't be read on another machine or account, and it
+  stores the session, not your password.
+
+### Fixed
+- **Being asked to log in twice in a row, and again for every new selection.** The
+  retry logic no longer throws away a fresh session at the first hiccup - it retries
+  a couple of times before ever re-opening the login window, so one successful login
+  is enough. Combined with the persisted session above, repeated logins are gone.
+
 ## [2.0.1]
 
 ### Fixed

@@ -117,10 +117,18 @@ NuGet packages (restored automatically on build):
   for the stare.e-gry.net listing.
 - [`Microsoft.Web.WebView2`](https://www.nuget.org/packages/Microsoft.Web.WebView2) —
   embedded browser for interactive login.
+- [`System.Security.Cryptography.ProtectedData`](https://www.nuget.org/packages/System.Security.Cryptography.ProtectedData) —
+  DPAPI encryption for the saved login session.
 
 ## Building
 
 All commands are run from the repository root (where `MagazineGrabber.sln` lives).
+
+> **Build vs Publish — which do I use?**
+> **Build** (`Ctrl+Shift+B` / `F5`) compiles the app for *running and debugging*. Its
+> output in `bin\Debug\` is many DLLs plus an EXE — it is **not** a distributable single
+> file, and it can't make the self-contained one. To produce the two shippable EXEs,
+> always use **Publish** (the profiles below) or the CLI — never `Ctrl+Shift+B`.
 
 ### From Visual Studio (one click)
 
@@ -131,8 +139,14 @@ Two publish profiles are included under
 - **FrameworkDependent-SingleFile** — tiny EXE, needs the .NET 10 runtime.
 
 Right-click the **MagazineGrabber** project → **Publish…** → pick the profile →
-**Publish**. The output folder opens when it's done. (Or use the CLI commands below
-from **View → Terminal** in Visual Studio.)
+**Publish**. When it finishes, click **Open folder** in the Publish summary — the single
+`MagazineGrabber.exe` there is the file to ship (with these profiles the folder holds
+just that one EXE). The two profiles publish to separate folders:
+
+- `MagazineGrabber\bin\Release\net10.0-windows\publish\selfcontained\MagazineGrabber.exe`
+- `MagazineGrabber\bin\Release\net10.0-windows\publish\framework\MagazineGrabber.exe`
+
+(Or use the CLI commands below from **View → Terminal** in Visual Studio.)
 
 ### Debug (day-to-day development)
 
