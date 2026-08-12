@@ -48,11 +48,22 @@ namespace MagazineGrabber
             HarvestedCookies = new List<Cookie>();
             foreach (var c in cookies)
             {
-                // Keep only name/value here - the System.Net.Cookie 4-arg ctor throws on some
-                // real-world domain/path values, and the provider re-scopes these to the right
-                // host anyway (see StareEGryProvider.ApplyLoginCookies).
-                try { HarvestedCookies.Add(new Cookie(c.Name, c.Value)); }
-                catch { /* skip anything that won't construct as a cookie */ }
+                // Preserve the browser's own Domain/Path scoping - it matches what the server
+                // set, so later Set-Cookie responses update the same entry instead of piling up
+                // a duplicate (which is what broke the 2nd+ download until an app restart).
+                try
+                {
+                    var cookie = new Cookie(c.Name, c.Value);
+                    if (!string.IsNullOrWhiteSpace(c.Domain)) cookie.Domain = c.Domain;
+                    cookie.Path = string.IsNullOrWhiteSpace(c.Path) ? "/" : c.Path;
+                    HarvestedCookies.Add(cookie);
+                }
+                catch
+                {
+                    // Fall back to a bare name/value cookie if the reported domain/path won't validate.
+                    try { HarvestedCookies.Add(new Cookie(c.Name, c.Value)); }
+                    catch { /* skip anything that won't construct as a cookie */ }
+                }
             }
 
             DialogResult = true;

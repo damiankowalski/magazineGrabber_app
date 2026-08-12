@@ -44,26 +44,38 @@ namespace MagazineGrabber
 
         public void ApplyLoginCookies(IEnumerable<Cookie> cookies)
         {
-            // Re-create each harvested cookie as a plain host-only cookie tied to this exact
-            // host, deliberately dropping whatever Domain/Path the browser reported.
+            // Start each login from a clean jar: expire whatever is currently stored - the
+            // pre-login anonymous session, or a previous session that has since gone stale - so
+            // the fresh logged-in cookies can't end up duplicated next to leftovers.
             //
-            // Why: the earlier *unauthenticated* download request already ran through this same
-            // HttpClient, so the site's anonymous session cookie (e.g. PHPSESSID=anon...) is
-            // sitting in _cookies as a host-only cookie. WebView2 hands its logged-in cookie
-            // back with Domain=".stare.e-gry.net" (leading dot => a *domain* cookie). Adding it
-            // as-is does NOT replace the anonymous host-only cookie of the same name - the
-            // container keeps BOTH and emits "PHPSESSID=anon; PHPSESSID=loggedin", which the
-            // server reads as the anonymous (logged-out) session. That's why the very first
-            // download right after logging in still came back as "please log in".
-            //
-            // Using Add(Uri, Cookie) with a name/value-only cookie stores it host-only for this
-            // host and cleanly overwrites the same-named anonymous cookie, so the first
-            // authenticated request is actually authenticated.
+            // Why it matters: duplicate same-named cookies make the container send
+            // "PHPSESSID=old; PHPSESSID=new" on the next request, and the server picks the wrong
+            // one. That's the "first download works, the next ones fail until you restart the
+            // app" symptom - a restart just happened to start from an empty jar.
+            try
+            {
+                foreach (Cookie existing in _cookies.GetAllCookies())
+                    existing.Expired = true;
+            }
+            catch { /* GetAllCookies is best-effort; ignore if it isn't available */ }
+
             var siteUri = new Uri("https://stare.e-gry.net/");
             foreach (var c in cookies)
             {
-                try { _cookies.Add(siteUri, new Cookie(c.Name, c.Value)); }
-                catch { /* ignore malformed/duplicate cookie entries */ }
+                try
+                {
+                    // Keep the browser's Domain/Path so the scoping matches the server's own
+                    // Set-Cookie on later downloads (no host-only vs domain duplication).
+                    if (!string.IsNullOrWhiteSpace(c.Domain))
+                        _cookies.Add(c);
+                    else
+                        _cookies.Add(siteUri, new Cookie(c.Name, c.Value));
+                }
+                catch
+                {
+                    try { _cookies.Add(siteUri, new Cookie(c.Name, c.Value)); }
+                    catch { /* ignore malformed/duplicate cookie entries */ }
+                }
             }
         }
 
@@ -148,13 +160,35 @@ namespace MagazineGrabber
                 return kind == OutputKind.Pdf ? DownloadOutcome.Pdf(localPath) : DownloadOutcome.Djvu(localPath);
             }
 
-            using var response = await _http.GetAsync(item.SourceUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            // Be gentle on an old, session-limited site: a small spacing between requests and a
+            // same-origin Referer make the download look like it came from the listing page and
+            // reduce the chance of tripping a per-session throttle.
+            await Task.Delay(600, ct);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, item.SourceUrl);
+            request.Headers.Referrer = new Uri("https://stare.e-gry.net/");
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
             var mediaType = response.Content.Headers.ContentType?.MediaType ?? "";
+
+            // 401/403 (or a redirect that landed back on the login page) means the session is no
+            // longer valid - treat it as "needs login" so the manager re-authenticates instead
+            // of just failing.
+            if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+                return DownloadOutcome.AuthRequired;
+
+            if (response.RequestMessage?.RequestUri is { } finalUri &&
+                finalUri.AbsolutePath.Contains("login", StringComparison.OrdinalIgnoreCase))
+                return DownloadOutcome.AuthRequired;
+
             if (mediaType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
             {
                 var body = await response.Content.ReadAsStringAsync(ct);
-                if (body.Contains("Zaloguj", StringComparison.OrdinalIgnoreCase))
+                // Any of the site's "you are not logged in" markers, not just the exact word.
+                if (body.Contains("Zaloguj", StringComparison.OrdinalIgnoreCase) ||
+                    body.Contains("logowanie", StringComparison.OrdinalIgnoreCase) ||
+                    body.Contains("musisz by", StringComparison.OrdinalIgnoreCase) ||   // "musisz być zalogowany"
+                    body.Contains("zalogowa", StringComparison.OrdinalIgnoreCase))      // "zalogować / zalogowany"
                     return DownloadOutcome.AuthRequired;
 
                 return DownloadOutcome.Failed;

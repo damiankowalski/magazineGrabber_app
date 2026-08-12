@@ -242,6 +242,7 @@ works whether `<id>` is one item or a whole collection.
 | JP2 items fail to convert | Install **Python** (tick "Add to PATH"); first run installs `img2pdf`/`Pillow`. |
 | DjVu never becomes a PDF | Install **DjVuLibre** and ensure `ddjvu.exe` is on `PATH`. |
 | First download after login used to fail | Fixed in 2.0 — cookies are re-scoped and the item retries automatically. |
+| Only the first stare.e-gry.net download worked, rest failed until restart | Fixed in 2.0.1 — the session is kept clean and re-established automatically on failure. |
 
 ## Adding a new source
 
